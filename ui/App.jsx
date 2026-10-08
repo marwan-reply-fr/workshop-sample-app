@@ -1,17 +1,7 @@
 import { useEffect, useState } from 'react';
-
-const today = () => new Date().toISOString().slice(0, 10);
-const timeLabel = (value) => value.slice(11, 16);
-const dateLabel = (value) => new Date(`${value}T12:00:00Z`).toLocaleDateString('en', {
-  weekday: 'long', month: 'long', day: 'numeric', timeZone: 'UTC',
-});
-
-async function api(path, options) {
-  const response = await fetch(`/api${path}`, options);
-  const body = await response.json();
-  if (!response.ok) throw new Error(body.error ?? 'Unable to complete the request.');
-  return body;
-}
+import { api } from './api-client.js';
+import { today, timeLabel, dateLabel } from './time.js';
+import { formatConflictIntervals } from './conflict-message.js';
 
 function RoomSketch({ capacity }) {
   const chairs = capacity === 4 ? 2 : capacity === 8 ? 3 : 4;
@@ -27,12 +17,14 @@ function RoomSketch({ capacity }) {
 function BookingForm({ room, date, onBooked }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [conflicts, setConflicts] = useState([]);
 
   async function submit(event) {
     event.preventDefault();
     const form = event.currentTarget;
     const fields = new FormData(form);
     setError('');
+    setConflicts([]);
     setSaving(true);
     try {
       const booking = await api('/bookings', {
@@ -50,6 +42,7 @@ function BookingForm({ room, date, onBooked }) {
       onBooked(booking);
     } catch (error) {
       setError(error.message);
+      setConflicts(error.conflicts ?? []);
     } finally {
       setSaving(false);
     }
@@ -83,7 +76,18 @@ function BookingForm({ room, date, onBooked }) {
               <input name="endTime" type="time" defaultValue="10:00" step="60" required />
             </label>
           </div>
-          {error && <p role="alert" className="rounded-xl bg-white p-3 text-sm text-red-800">{error}</p>}
+          {error && (
+            <div role="alert" className="rounded-xl bg-white p-3 text-sm text-red-800" data-testid="booking-form-error">
+              <p>{error}</p>
+              {conflicts.length > 0 && (
+                <ul className="mt-1 list-disc pl-4" data-testid="booking-form-conflict-intervals">
+                  {formatConflictIntervals(conflicts).map((interval, index) => (
+                    <li key={index} data-testid="booking-form-conflict-interval">{interval}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
           <button className="book-button" type="submit">
             {saving ? 'Booking…' : 'Confirm booking'} <span aria-hidden="true">↗</span>
           </button>
