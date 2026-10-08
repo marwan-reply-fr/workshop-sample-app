@@ -57,7 +57,9 @@ export function createAppServer({ store = createStore() } = {}) {
       console.error(error);
       message = 'Something went wrong.';
     }
-    response.status(status).json({ error: message });
+    const body = { error: message };
+    if (error.conflicts) body.conflicts = error.conflicts;
+    response.status(status).json(body);
   });
   return createServer(app);
 }

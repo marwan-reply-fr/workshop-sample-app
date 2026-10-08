@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createBooking, listBookings, ValidationError } from '../src/bookings.js';
+import { ConflictError, createBooking, listBookings, ValidationError } from '../src/bookings.js';
 import { createStore } from '../src/store.js';
 
 const validBooking = {
@@ -57,6 +57,82 @@ test('accepts a real leap day and millisecond timestamps', () => {
     ...validBooking, startTime: '2032-02-29T09:00:00.125Z', endTime: '2032-02-29T10:00:00.125Z',
   });
   assert.equal(booking.startTime, '2032-02-29T09:00:00.125Z');
+});
+
+const overlapCases = [
+  ['exact-duplicate range', '2030-06-12T09:00:00Z', '2030-06-12T10:00:00Z'],
+  ['partial overlap at the start', '2030-06-12T08:30:00Z', '2030-06-12T09:30:00Z'],
+  ['partial overlap at the end', '2030-06-12T09:30:00Z', '2030-06-12T10:30:00Z'],
+  ['containment of the existing booking', '2030-06-12T08:00:00Z', '2030-06-12T11:00:00Z'],
+  ['containment within the existing booking', '2030-06-12T09:15:00Z', '2030-06-12T09:45:00Z'],
+];
+
+for (const [description, startTime, endTime] of overlapCases) {
+  test(`rejects a ${description} in the same room with 409 and the conflicting record`, () => {
+    const store = createStore();
+    const existing = createBooking(store, validBooking);
+    try {
+      createBooking(store, { ...validBooking, startTime, endTime, title: 'Another meeting' });
+      assert.fail('expected ConflictError to be thrown');
+    } catch (error) {
+      assert.ok(error instanceof ConflictError);
+      assert.equal(error.status, 409);
+      assert.deepEqual(error.conflicts, [existing]);
+    }
+    assert.equal(store.bookings.length, 1);
+  });
+}
+
+test('back-to-back bookings starting exactly when the prior one ends do not conflict', () => {
+  const store = createStore();
+  const first = createBooking(store, validBooking);
+  const second = createBooking(store, { ...validBooking, startTime: first.endTime, endTime: '2030-06-12T11:00:00Z' });
+  assert.equal(store.bookings.length, 2);
+  assert.notEqual(first.id, second.id);
+});
+
+test('back-to-back bookings ending exactly when the next one starts do not conflict', () => {
+  const store = createStore();
+  const second = createBooking(store, validBooking);
+  const first = createBooking(store, { ...validBooking, startTime: '2030-06-12T08:00:00Z', endTime: second.startTime });
+  assert.equal(store.bookings.length, 2);
+  assert.notEqual(first.id, second.id);
+});
+
+test('a multi-day booking conflicts with a later request overlapping any of its spanned days', () => {
+  const store = createStore();
+  const spanning = createBooking(store, {
+    ...validBooking, startTime: '2030-06-12T23:00:00Z', endTime: '2030-06-14T00:00:00Z',
+  });
+  assert.throws(
+    () => createBooking(store, { ...validBooking, startTime: '2030-06-13T09:00:00Z', endTime: '2030-06-13T10:00:00Z' }),
+    (error) => error instanceof ConflictError && error.conflicts.length === 1 && error.conflicts[0].id === spanning.id
+  );
+});
+
+test('an identical interval in a different room is never blocked', () => {
+  const store = createStore();
+  createBooking(store, validBooking);
+  const other = createBooking(store, { ...validBooking, roomId: 'maple' });
+  assert.equal(store.bookings.length, 2);
+  assert.equal(other.roomId, 'maple');
+});
+
+test('a request overlapping two existing bookings reports both in the conflicts array', () => {
+  const store = createStore();
+  const first = createBooking(store, validBooking);
+  const second = createBooking(store, { ...validBooking, startTime: '2030-06-12T10:00:00Z', endTime: '2030-06-12T11:00:00Z' });
+  try {
+    createBooking(store, { ...validBooking, startTime: '2030-06-12T09:30:00Z', endTime: '2030-06-12T10:30:00Z' });
+    assert.fail('expected ConflictError to be thrown');
+  } catch (error) {
+    assert.ok(error instanceof ConflictError);
+    assert.deepEqual(
+      error.conflicts.map((booking) => booking.id).sort(),
+      [first.id, second.id].sort()
+    );
+  }
+  assert.equal(store.bookings.length, 2);
 });
 
 const invalidInputs = [
