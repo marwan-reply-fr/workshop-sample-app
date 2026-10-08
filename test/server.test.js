@@ -36,6 +36,51 @@ test('API lists rooms, creates a booking, and retrieves it', async (t) => {
   assert.deepEqual(await listed.json(), [result]);
 });
 
+test('API rejects an overlapping booking in the same room with 409 and full conflict detail', async (t) => {
+  const request = await setup(t);
+  const created = await request('/api/bookings', post(booking));
+  const existing = await created.json();
+  const response = await request('/api/bookings', post({
+    ...booking, title: 'Overlapping meeting', startTime: '2030-06-12T09:30:00Z', endTime: '2030-06-12T10:30:00Z',
+  }));
+  assert.equal(response.status, 409);
+  const body = await response.json();
+  assert.equal(typeof body.error, 'string');
+  assert.deepEqual(body.conflicts, [existing]);
+  const listed = await request('/api/bookings?roomId=cedar&date=2030-06-12');
+  assert.deepEqual(await listed.json(), [existing]);
+});
+
+test('API accepts a back-to-back booking starting exactly when the prior one ends', async (t) => {
+  const request = await setup(t);
+  const created = await request('/api/bookings', post(booking));
+  const existing = await created.json();
+  const response = await request('/api/bookings', post({
+    ...booking, title: 'Next meeting', startTime: existing.endTime, endTime: '2030-06-12T11:00:00Z',
+  }));
+  assert.equal(response.status, 201);
+});
+
+test('API allows an identical interval to be booked in a different room', async (t) => {
+  const request = await setup(t);
+  await request('/api/bookings', post(booking));
+  const response = await request('/api/bookings', post({ ...booking, roomId: 'maple' }));
+  assert.equal(response.status, 201);
+});
+
+test('a conflicting booking sent directly to the API without the browser form is still rejected', async (t) => {
+  const request = await setup(t);
+  await request('/api/bookings', post(booking));
+  const response = await request('/api/bookings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(booking),
+  });
+  assert.equal(response.status, 409);
+  const body = await response.json();
+  assert.equal(body.conflicts.length, 1);
+});
+
 test('API returns useful validation errors and does not create invalid bookings', async (t) => {
   const request = await setup(t);
   const response = await request('/api/bookings', post({ ...booking, endTime: booking.startTime }));
